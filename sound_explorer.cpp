@@ -45,10 +45,31 @@ enum sound_field {
 };
 
 // The currently selected sound field input
-uint8_t input_num = 0;
+uint8_t input_num;
+
+// The current increment/decrement step size
+uint8_t step_size;
 
 // Capture of starting values so they can be restored if needed
 std::array<int32_t, 12> default_values;
+
+// The delays for repeat events when a directional button is held down
+#define INITIAL_REPEAT_DELAY 50
+#define REPEAT_DELAY 10
+
+// State of buttons
+struct button_state_t {
+  uint8_t button_id;
+  bool pressed;
+  uint32_t next_event_tick;
+};
+
+button_state_t button_states[8] = {
+  { button::UP,    false, 0 },
+  { button::DOWN,  false, 0 },
+  { button::LEFT,  false, 0 },
+  { button::RIGHT, false, 0 },
+};
 
 // -------------------------------------------------------------------------------
 // Event loop functions
@@ -59,49 +80,63 @@ void init() {
   for (int i=0; i<12; i++) {
     default_values[i] = dials[i].value;
   }
+
+  // Init the global state
+  input_num = 0;
+  step_size = dials[input_num].step;
 }
 
-void update(uint32_t tick) {
-  if (pressed(button::B)) {
-    voice_t my_voice = voice(
-                          dials[attack].value, dials[decay].value,
-                          dials[sustain].value, dials[release].value,
-                          dials[bend].value, dials[bend_ms].value, dials[reverb].value,
-                          dials[noise].value, dials[distort].value
-                          );
+void fire_event(uint8_t button) {
+  switch (button) {
 
-    play(my_voice, dials[frequency].value, dials[duration].value, dials[volume].value);
-  }
+  case button::UP:
+    if (input_num > 0) {
+      input_num--;
+    }
+    break;
 
-  if (pressed(button::UP) && input_num > 0) {
-    input_num--;
-  }
-  if (pressed(button::DOWN) && input_num < 11) {
-    input_num++;
-  }
+  case button::DOWN:
+    if (input_num < 11) {
+      input_num++;
+    }
+    break;
 
-  uint8_t step_size = dials[input_num].step;
-
-  if (button(button::Y)) {
-    step_size = 1;
-  } else if (button(button::A)) {
-    step_size = step_size * 2;
-  }
-
-  if (pressed(button::LEFT)) {
+  case button::LEFT:
     dials[input_num].value -= step_size;
 
     if (dials[input_num].value < dials[input_num].min) {
       dials[input_num].value = dials[input_num].min;
     }
-  }
+    break;
 
-  if (pressed(button::RIGHT)) {
+  case button::RIGHT:
     dials[input_num].value += step_size;
 
     if (dials[input_num].value > dials[input_num].max) {
       dials[input_num].value = dials[input_num].max;
     }
+    break;
+  }
+}
+
+void update(uint32_t tick) {
+  // Handle simple button commands
+  if (pressed(button::B)) {
+    voice_t my_voice = voice(
+                             dials[attack].value, dials[decay].value,
+                             dials[sustain].value, dials[release].value,
+                             dials[bend].value, dials[bend_ms].value, dials[reverb].value,
+                             dials[noise].value, dials[distort].value
+                             );
+
+    play(my_voice, dials[frequency].value, dials[duration].value, dials[volume].value);
+  }
+
+  step_size = dials[input_num].step;
+  if (button(button::Y)) {
+    step_size = 1;
+  } else if (button(button::A)) {
+    step_size = step_size * 2;
   }
 
   if (button(button::X)) {
@@ -109,26 +144,65 @@ void update(uint32_t tick) {
       dials[i].value = default_values[i];
     }
   }
+
+  // Handle button commands with auto repeat
+  for (int i=0; i<4; i++) {
+    if (button(button_states[i].button_id)) {
+      if (!button_states[i].pressed) {
+        button_states[i].pressed = true;
+        button_states[i].next_event_tick = tick + INITIAL_REPEAT_DELAY;
+        fire_event(button_states[i].button_id);
+      } else if (tick >= button_states[i].next_event_tick) {
+        button_states[i].next_event_tick = tick + REPEAT_DELAY;
+        fire_event(button_states[i].button_id);
+      }
+    } else {
+      button_states[i].pressed = false;
+      button_states[i].next_event_tick = 0;
+    }
+  }
+}
+
+void center_align_text(uint32_t x, uint32_t y, const std::string &str_value) {
+  int32_t width, height;
+
+  measure(str_value, width, height);
+
+  text(str_value, x - (width / 2), y);
+}
+
+void right_align_number(uint32_t x, uint32_t y, int32_t value) {
+  std::string str_value = str(value);
+  int32_t width, height;
+
+  measure(str_value, width, height);
+
+  text(str_value, x - width, y);
 }
 
 void draw(uint32_t tick) {
   pen(0, 0, 0);
   clear();
 
+  pen(5, 5, 5);
+  center_align_text(60, 0, "sound explorer");
+  hline(0,  10, 120);
+  hline(0, 110, 120);
+
   for (int i=0; i<12; i++) {
     if (i==input_num) {
       pen(15, 15, 15);
-      text(">", 0, 8 * i);
+      text(">", 0, 12 + 8 * i);
     } else {
       pen(10, 10, 10);
     }
-    text(dials[i].name,         8, 8 * i);
-    text(str(dials[i].value),  76, 8 * i);
-    text(dials[i].unit,       104, 8 * i);
+    text(dials[i].name,         8, 12 + 8 * i);
+    right_align_number(       100, 12 + 8 * i, dials[i].value);
+    text(dials[i].unit,       104, 12 + 8 * i);
   }
 
   if (position() >= 0) {
     pen(0, 10, 0);
-    text("Playing...", 0, 112);
+    center_align_text(60, 112, ". . . playing . . .");
   }
 }
